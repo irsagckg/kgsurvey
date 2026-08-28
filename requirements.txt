@@ -1,0 +1,15 @@
+pandas
+streamlit==1.41.0
+gspread
+oauth2client
+toml
+altair
+streamlit_authenticator
+numpy
+scipy
+navigation
+plotly
+matplotlib
+seaborn
+scipy
+scikit-learn
