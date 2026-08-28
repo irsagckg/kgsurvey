@@ -18,6 +18,10 @@ def get_current_page_name():
 def make_sidebar():
     with st.sidebar:
         st.title(":blue_heart: KG Survey Result")
+        
+        # Display authenticated user identity from session_state safely
+        user_email = st.session_state.get("user_email", "Guest User")
+        st.caption(f"Logged in as:\n**{user_email}**")
         st.write("")
         st.write("")
 
@@ -38,8 +42,7 @@ def make_sidebar():
                 logout()
 
         elif get_current_page_name() != "streamlit_app":
-            # If anyone tries to access a secret page without being logged in,
-            # redirect them to the login page
+            # Redirect unauthenticated page access to main script
             st.switch_page("streamlit_app.py")
 
 
@@ -49,13 +52,12 @@ def logout():
     sleep(0.5)
     st.switch_page("streamlit_app.py")
 
-def make_filter(columns_list, df_survey, key_prefix="filter"):
-    # Remove 'year' — only use provided columns_list
+
+def make_filter(columns_list, df_survey, combined_df):
     filter_columns = st.multiselect(
         'Filter the data (optional):',
         options=columns_list,
-        format_func=lambda x: x.capitalize(),
-        key=f"{key_prefix}_columns"
+        format_func=lambda x: x.capitalize()
     )
 
     if 'layer' in filter_columns:
@@ -74,14 +76,22 @@ def make_filter(columns_list, df_survey, key_prefix="filter"):
         """)
 
     selected_filters = {}
+    filtered_data, filtered_combined = df_survey.copy(), combined_df.copy()
+
     for filter_col in filter_columns:
-        values = st.multiselect(
-            f"Select {filter_col.capitalize()} to filter the data:",
-            options=df_survey[filter_col].dropna().unique(),
-            key=f"{key_prefix}_{filter_col}"
+        selected_filter_value = st.multiselect(
+            f'Select {filter_col.capitalize()} to filter the data:',
+            options=filtered_data[filter_col].dropna().unique(),
+            key=f'filter_{filter_col}'
         )
-        if values:
-            selected_filters[filter_col] = values
+        
+        if selected_filter_value:
+            filtered_data = filtered_data[filtered_data[filter_col].isin(selected_filter_value)]
+            filtered_combined = filtered_combined[filtered_combined[filter_col].isin(selected_filter_value)]
+            selected_filters[filter_col] = selected_filter_value
 
-    return selected_filters
+    if filtered_data.shape[0] <= 1 or filtered_combined.shape[0] <= 1:
+        st.write("Data is unavailable to protect confidentiality.")
+        return pd.DataFrame(), pd.DataFrame(), {}
 
+    return filtered_data, filtered_combined, selected_filters
