@@ -1,78 +1,95 @@
 import streamlit as st
+from time import sleep
 from navigation import make_sidebar
+import streamlit_authenticator as stauth
 from data_processing import finalize_data
 import gspread
-from datetime import datetime
+from datetime import datetime, timedelta
 from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(
     page_title='Survey Result',
-    page_icon=':blue_heart:',
+    page_icon=':blue_heart:', 
 )
 
-# Fetch data source credentials and survey data
+# Fetch the credentials from the data source
 df_survey25, df_survey24, df_survey23, df_creds = finalize_data()
 
-# -----------------------------------------------------------------------------
-# PRIVATE APP AUTHENTICATION VERIFICATION (CLOUD + LOCAL DEV FALLBACK)
-# -----------------------------------------------------------------------------
-def get_authenticated_user_email():
-    # 1. Check Streamlit Cloud native st.user identity object
-    if hasattr(st, "user") and hasattr(st.user, "email") and st.user.email:
-        return st.user.email
-    # 2. Check newer Streamlit st.context API if present
-    elif hasattr(st, "context") and hasattr(st.context, "user") and getattr(st.context.user, "email", None):
-        return st.context.user.email
-    # 3. Local development fallback via secrets.toml
-    elif st.secrets.get("LOCAL_DEV", False):
-        return st.secrets.get("DEV_USER_EMAIL", df_creds['email'].iloc[0] if not df_creds.empty else None)
-    return None
+# Process `df_creds` to extract credentials in the required format
+def extract_credentials(df_creds):
+    credentials = {
+        "credentials": {
+            "usernames": {}
+        },
+        "cookie": {
+            "name": "growth_center",
+            "key": "growth_2024",
+            "expiry_days": 30
+        }
+    }
+    for index, row in df_creds.iterrows():
+        credentials['credentials']['usernames'][row['username']] = {
+            'name': row['name'],  # Add the 'name' field
+            'password': row['password'],  # Password should already be hashed
+            'unit': row['unit'],  # Store the user's unit for later filtering
+            'email': row['email'],  # Add the email field
+        }
+    return credentials
 
-user_email = get_authenticated_user_email()
+# Extract credentials from df_creds
+credentials = extract_credentials(df_creds)
 
-if not user_email:
-    st.error("🔒 Access Denied. This is a private application. Please access it via your workspace account.")
-    st.stop()
+# Authentication Setup
+authenticator = stauth.Authenticate(
+    credentials['credentials'],
+    credentials['cookie']['name'],
+    credentials['cookie']['key'],
+    credentials['cookie']['expiry_days'],
+    auto_hash=False
+)
 
-# Match authenticated workspace email to authorization dictionary (df_creds)
-if user_email in df_creds['email'].values:
-    user_row = df_creds[df_creds['email'] == user_email].iloc[0]
-    
-    # Store authenticated session variables
-    st.session_state['logged_in'] = True
-    st.session_state['user_email'] = user_email
-    st.session_state['username'] = user_row['username']
-    st.session_state['user_name'] = user_row['name']
-    
-    # Render navigation sidebar
+# Make the sidebar visible only if logged in
+if st.session_state.get("logged_in", False):
     make_sidebar()
 
-    st.subheader('KG Employee Survey Dashboard', divider='gray')
-    st.success(f"Logged in successfully! Welcome, {user_row['name']}.")
+# Display the title of the app
+st.subheader('KG Employee Survey Dashboard', divider='gray')
 
-    # -------------------------------------------------------------------------
-    # ACCESS LOGGING (GOOGLE SHEETS INTEGRATION)
-    # -------------------------------------------------------------------------
+# Display the login form
+authenticator.login('main')
+
+# Handle authentication status
+if st.session_state.get('authentication_status'):
+    st.session_state['logged_in'] = True  # Set session state for logged in
+    st.success("Logged in successfully!")
+    
+    username = st.session_state['username']
+
+    # Retrieve the user's email and name from the credentials
+    user_email = credentials['credentials']['usernames'][username]['email']
+    user_name = credentials['credentials']['usernames'][username]['name']
+
+        #ACCESS LOG
     def log_user_access(email):
         access_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Setup the Google Sheets client
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["sheets"], scope)
+        client = gspread.authorize(creds)
         
         try:
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["sheets"], scope)
-            client = gspread.authorize(creds)
-            spreadsheet_id = "1qUZaGkwv7Shx3gDnSQNdYFOjuqmVtRUEgKzdrBrsovM"
-            sheet = client.open_by_key(spreadsheet_id).sheet1
+            spreadsheet_id = "1qUZaGkwv7Shx3gDnSQNdYFOjuqmVtRUEgKzdrBrsovM"  # Replace with your actual spreadsheet ID
+            sheet = client.open_by_key(spreadsheet_id).sheet1  # Use open_by_key instead of open
             sheet.append_row([email, access_time])
         except gspread.SpreadsheetNotFound:
             st.write("Spreadsheet not found. Please check the ID and permissions.")
         except Exception as e:
             st.write(f"An error occurred: {e}")
+    # Get the user's email from Streamlit's experimental_user function
+    log_user_access(user_email)
 
-    # Trigger user access log once per session
-    if not st.session_state.get('logged_to_sheets', False):
-        log_user_access(user_email)
-        st.session_state['logged_to_sheets'] = True
-
-else:
-    st.error(f"❌ Account Unauthorized: The email address '{user_email}' is not listed in the credentials database.")
-    st.stop()
+elif st.session_state.get('authentication_status') is False:
+    st.error("Incorrect username or password.")
+elif st.session_state.get('authentication_status') is None:
+    st.warning("Please enter your username and password to log in.")

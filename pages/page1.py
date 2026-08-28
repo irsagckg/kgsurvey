@@ -11,11 +11,6 @@ st.set_page_config(
     page_icon='🌎',
 )
 
-# Guard against direct unauthenticated URL access
-if not st.session_state.get('logged_in', False):
-    st.warning("Please sign in via the main page.")
-    st.switch_page("streamlit_app.py")
-
 make_sidebar()
 df_survey25, df_survey24, df_survey23, df_creds = finalize_data()
 
@@ -40,13 +35,45 @@ def categorize(value):
         return None
 
 # ==============================
-# MAIN SECTION & UNIT DATA ISOLATION
+# FILTER FUNCTION
 # ==============================
-if st.session_state.get('logged_in', False):
+def make_filter(columns_list, df_survey, combined_df):
+    filter_columns = st.multiselect(
+        'Filter the data (optional):',
+        options=columns_list,
+        format_func=lambda x: x.capitalize()
+    )
+
+    selected_filters = {}
+    filtered_data, filtered_combined = df_survey.copy(), combined_df.copy()
+
+    for filter_col in filter_columns:
+        selected_filter_value = st.multiselect(
+            f'Select {filter_col.capitalize()} to filter the data:',
+            options=filtered_data[filter_col].dropna().unique(),
+            key=f'filter_{filter_col}'
+        )
+        
+        if selected_filter_value:
+            filtered_data = filtered_data[filtered_data[filter_col].isin(selected_filter_value)]
+            filtered_combined = filtered_combined[filtered_combined[filter_col].isin(selected_filter_value)]
+            selected_filters[filter_col] = selected_filter_value
+
+    if filtered_data.shape[0] <= 1 or filtered_combined.shape[0] <= 1:
+        st.write("Data is unavailable to protect confidentiality.")
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    return filtered_data, filtered_combined, selected_filters
+
+
+# ==============================
+# MAIN SECTION
+# ==============================
+if st.session_state.get('authentication_status'):
     username = st.session_state['username']
     user_units = df_creds.loc[df_creds['username'] == username, 'unit'].values[0].split(', ')
 
-    # Filter datasets strictly by the user's business unit access
+    # Filter each dataset based on user access
     df_survey25 = df_survey25[df_survey25['subunit'].isin(user_units)]
     df_survey24 = df_survey24[df_survey24['subunit'].isin(user_units)]
     df_survey23 = df_survey23[df_survey23['subunit'].isin(user_units)]
@@ -66,7 +93,7 @@ if st.session_state.get('logged_in', False):
     st.header('Demography Overview', divider='rainbow')
 
     # ==============================
-    # SATISFACTION FILTER (PRESERVED COMMENTED BLOCK)
+    # SATISFACTION FILTER
     # ==============================
     #high_satisfaction = st.checkbox("Profil Karyawan Puas (Skor 5)")
     #low_satisfaction = st.checkbox("Profil Karyawan Tidak Puas (Skor 1 dan 2)")
@@ -104,6 +131,7 @@ if st.session_state.get('logged_in', False):
     #st.write("Selected filters:", selected_filters)
     #st.write("Combined filtered rows:", len(filtered_combined))
 
+
     # ==============================
     # 📊 METRICS SECTION
     # ==============================
@@ -133,15 +161,18 @@ if st.session_state.get('logged_in', False):
 
     df_yearly = pd.DataFrame(yearly_data)
 
+    # ==============================
+
     st.markdown("###### 🧩 Participation Rate Comparison")
 
-    # --- Color mappings ---
+    # --- Warna ---
     colors = {
         "Participants": "#1A2B4C",
         "Non-participants": "#EAD8C0"
     }
 
-    # --- Top summary metrics ---
+
+    # --- Summary di atas grafik (centered) ---
     cols = st.columns(len(df_yearly), gap="large")
     for i, row in enumerate(df_yearly.itertuples()):
         with cols[i]:
@@ -156,11 +187,11 @@ if st.session_state.get('logged_in', False):
                 unsafe_allow_html=True
             )
 
-    # --- Calculations for non-participants ---
+    # --- Hitung tambahan untuk non-participants ---
     df_yearly['non_percentage'] = 100 - df_yearly['percentage']
     df_yearly['non_participants'] = df_yearly['total'] - df_yearly['participants']
 
-    # --- Plotly stacked figure (Preserved commented code) ---
+    # --- Buat grafik stacked ---
     #fig = go.Figure()
 
     #for label, color in colors.items():
@@ -185,12 +216,20 @@ if st.session_state.get('logged_in', False):
     #    barmode='stack',
     #    yaxis=dict(title="Percentage", range=[0, 100]),
     #    xaxis=dict(title="Year"),
-    #    legend=dict(orientation="h", y=-0.2),
+    #   legend=dict(orientation="h", y=-0.2),
     #    height=450,
     #    template="plotly_white"
     #)
 
     #st.plotly_chart(fig, use_container_width=True)
+
+
+
+
+
+
+
+
 
     st.divider()
 
@@ -211,40 +250,40 @@ if st.session_state.get('logged_in', False):
     year_options = ["2023", "2024", "2025"]
     selected_year = st.selectbox("Select Year to Display:", year_options, index=year_options.index("2025"))
 
-    # Combine all years
+    # Gabungkan semua tahun dulu
     combined_years = pd.concat([
         df_survey23_filtered.assign(year="2023"),
         df_survey24_filtered.assign(year="2024"),
         df_survey25_filtered.assign(year="2025")
     ], ignore_index=True)
 
-    # Filter by selected year
+    # Filter by selected year first
     df_year_selected = combined_years[combined_years['year'] == selected_year]
 
     if unit_column in df_year_selected.columns:
         df_filtered = df_year_selected.copy()
 
-        # Compute participation status
+        # Buat kolom status partisipasi
         df_filtered['status_participation'] = df_filtered['submit_date'].apply(
             lambda x: 'Done' if pd.notna(x) and x != "" else 'Not Done'
         )
 
-        # Count unique NIKs per unit column and status
+        # Hitung jumlah unik NIK per unit-column dan status
         grouped = (
             df_filtered.groupby([unit_column, 'status_participation'])
             .agg(count=('nik', 'nunique'))
             .reset_index()
         )
 
-        # Calculate unit total for percentage calculations
+        # Hitung total per unit untuk persentase
         totals = grouped.groupby(unit_column)['count'].transform('sum')
         grouped['percentage'] = grouped['count'] / totals * 100
 
-        # Pivot table for horizontal stacked bar plot
+        # Pivot untuk plot stacked bar
         pivot_df = grouped.pivot(index=unit_column, columns='status_participation', values='percentage').fillna(0)
         pivot_counts = grouped.pivot(index=unit_column, columns='status_participation', values='count').fillna(0)
 
-        # Ensure required columns exist
+        # Pastikan kolom Done dan Not Done selalu ada
         for col in ['Done', 'Not Done']:
             if col not in pivot_df.columns:
                 pivot_df[col] = 0
@@ -253,7 +292,7 @@ if st.session_state.get('logged_in', False):
         pivot_df = pivot_df.reset_index()
         pivot_counts = pivot_counts.reset_index()
 
-        # Render horizontal stacked bar chart
+        # Plot horizontal stacked bar (Done vs Not Done)
         fig2 = px.bar(
             pivot_df,
             y=unit_column,
@@ -267,7 +306,7 @@ if st.session_state.get('logged_in', False):
             }
         )
 
-        # Apply labels
+        # Tambahkan label persentase + jumlah
         for trace in fig2.data:
             status = trace.name
             trace.customdata = pivot_counts[status]
